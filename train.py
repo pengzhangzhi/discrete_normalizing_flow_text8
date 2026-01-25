@@ -108,10 +108,6 @@ def main(cfg: DictConfig) -> None:
     )
     lr_monitor = LearningRateMonitor(logging_interval="step")
     
-    # Parse devices
-    devices = cfg.distributed.devices
-    if isinstance(devices, str) and devices != "auto":
-        devices = int(devices)
     
     # Trainer
     trainer = pl.Trainer(
@@ -124,7 +120,7 @@ def main(cfg: DictConfig) -> None:
         callbacks=[checkpoint_callback, lr_monitor],
         enable_progress_bar=True,
         strategy=cfg.distributed.strategy,
-        devices=devices,
+        devices=cfg.distributed.devices,
         num_nodes=cfg.distributed.num_nodes,
     )
     
