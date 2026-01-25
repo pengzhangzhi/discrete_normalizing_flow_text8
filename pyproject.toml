@@ -1,0 +1,17 @@
+[project]
+name = "discrete-normalizing-flow"
+version = "0.1.0"
+description = "TarFlow normalizing flow for text generation on text8"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "pytorch-lightning>=2.0",
+    "wandb",
+    "numpy",
+    "requests",
+    "pyyaml",
+]
+
+[dependency-groups]
+dev = ["ipython"]
