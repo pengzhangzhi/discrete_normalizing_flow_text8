@@ -26,10 +26,10 @@ train:
   lr: 1.0e-4
   weight_decay: 0.0
   dropout: 0.0
-  max_steps: 1_000_000
-  grad_clip: 100.0
-  val_check_interval: 1000
-  log_every_n_steps: 100
+  max_steps: 3_000_000
+  grad_clip: 1
+  val_check_interval: 10000
+  log_every_n_steps: 10
   precision: bf16-mixed
   seed: 42
 
@@ -41,6 +41,6 @@ distributed:
 
 # Logging
 logging:
-  project: tarflow-text8
+  project: discrete-normalizing-flow
   run_name: null
   save_dir: ./checkpoints
