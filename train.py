@@ -1,3 +1,5 @@
+import math
+from datetime import timedelta
 from pathlib import Path
 
 import hydra
@@ -9,6 +11,16 @@ from pytorch_lightning.loggers import WandbLogger
 
 from data import get_dataloaders
 from model import TarFlowModel
+
+
+def get_cosine_schedule_with_warmup(optimizer, warmup_steps: int, total_steps: int, min_lr_ratio: float = 0.1):
+    """Cosine LR schedule with linear warmup (standard LLM training schedule)."""
+    def lr_lambda(step):
+        if step < warmup_steps:
+            return step / max(1, warmup_steps)
+        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+        return min_lr_ratio + (1 - min_lr_ratio) * 0.5 * (1 + math.cos(math.pi * progress))
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
 class TarFlowLightning(pl.LightningModule):
@@ -48,6 +60,15 @@ class TarFlowLightning(pl.LightningModule):
         self.log("train/z_norm", z.pow(2).mean().sqrt(), sync_dist=True)
         return nll
     
+    def on_before_optimizer_step(self, optimizer):
+        # Log gradient norm
+        grad_norm = 0.0
+        for p in self.parameters():
+            if p.grad is not None:
+                grad_norm += p.grad.data.norm(2).item() ** 2
+        grad_norm = grad_norm ** 0.5
+        self.log("train/grad_norm", grad_norm, sync_dist=True)
+    
     def validation_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
         x = batch[0]
         z, logdet = self.model(x)
@@ -59,20 +80,27 @@ class TarFlowLightning(pl.LightningModule):
         return nll
     
     def configure_optimizers(self):
-        return torch.optim.AdamW(
+        optimizer = torch.optim.AdamW(
             self.parameters(),
             lr=self.cfg.train.lr,
             weight_decay=self.cfg.train.weight_decay,
             betas=(0.9, 0.999),
         )
+        scheduler = get_cosine_schedule_with_warmup(
+            optimizer,
+            warmup_steps=self.cfg.train.warmup_steps,
+            total_steps=self.cfg.train.max_steps,
+            min_lr_ratio=self.cfg.train.min_lr_ratio,
+        )
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
+        }
 
 
 @hydra.main(version_base=None, config_path=".", config_name="config")
 def main(cfg: DictConfig) -> None:
-    # Print config
     print(OmegaConf.to_yaml(cfg))
-    
-    # Seed
     pl.seed_everything(cfg.train.seed)
     
     # Data
@@ -94,20 +122,27 @@ def main(cfg: DictConfig) -> None:
         config=OmegaConf.to_container(cfg, resolve=True),
     )
     
-    # Callbacks
+    # Checkpoint directory
     save_dir = Path(cfg.logging.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
     
     checkpoint_callback = ModelCheckpoint(
         dirpath=save_dir,
-        filename="tarflow-{step:06d}-{val/loss:.4f}",
-        save_top_k=3,
-        monitor="val/loss",
-        mode="min",
-        save_last=True,
+        filename="last",
+        save_last=False,
+        train_time_interval=timedelta(minutes=175),
+        save_top_k=1,
+        enable_version_counter=False,
     )
     lr_monitor = LearningRateMonitor(logging_interval="step")
     
+    # Auto-resume: check for existing checkpoint
+    ckpt_path = save_dir / "last.ckpt"
+    if ckpt_path.exists():
+        print(f">>> Resuming from {ckpt_path}")
+    else:
+        ckpt_path = None
+        print(">>> Starting fresh training")
     
     # Trainer
     trainer = pl.Trainer(
@@ -124,8 +159,7 @@ def main(cfg: DictConfig) -> None:
         num_nodes=cfg.distributed.num_nodes,
     )
     
-    # Train
-    ckpt_path = cfg.get("resume", None)
+    # Train (auto-resume if checkpoint exists)
     trainer.fit(model, train_loader, val_loader, ckpt_path=ckpt_path)
 
 
