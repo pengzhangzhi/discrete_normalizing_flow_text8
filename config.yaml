@@ -26,7 +26,7 @@ train:
   lr: 1.0e-4
   min_lr_ratio: 0.1       # Cosine decays to lr * min_lr_ratio
   warmup_steps: 1000      # Linear warmup steps
-  weight_decay: 1e-4
+  weight_decay: 4e-4
   dropout: 0.0
   max_steps: 1000000
   grad_clip: 1.0
