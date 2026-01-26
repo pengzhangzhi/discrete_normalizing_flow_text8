@@ -242,9 +242,11 @@ class MetaBlock(torch.nn.Module):
             xb = x
             xa = torch.zeros_like(x)
 
-        scale = (-xa.float()).exp().type(xa.dtype)
+        # Clamp xa to prevent exp overflow (exp(20) ≈ 5e8, exp(-20) ≈ 2e-9)
+        xa_clamped = xa.float().clamp(-20, 20)
+        scale = (-xa_clamped).exp().type(xa.dtype)
         output = self.permutation((x_in - xb) * scale, inverse=True)
-        logdet = -xa.mean(dim=[1, 2])
+        logdet = -xa_clamped.mean(dim=[1, 2])
         if return_affine:
             return output, logdet, xa, xb
         return output, logdet
@@ -316,9 +318,9 @@ class MetaBlock(torch.nn.Module):
                 if "b" in guide_what:
                     zb = zb + g * (zb - zb_u)
 
-            scale = za[:, 0].float().exp().type(za.dtype)  # get rid of the sequence dimension
-            # Accumulate raw sum (will normalize at the end to match forward)
-            logdet_accum = logdet_accum + za[:, 0].sum(dim=-1)
+            za_clamped = za[:, 0].float().clamp(-10, 10)  # Prevent exp overflow
+            scale = za_clamped.exp().type(za.dtype)
+            logdet_accum = logdet_accum + za_clamped.sum(dim=-1)
             xs[i + 1] = xs[i + 1] * scale + zb[:, 0]
             x = torch.stack(xs, dim=1)
         self.set_sample_mode(False)

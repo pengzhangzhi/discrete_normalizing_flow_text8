@@ -52,7 +52,8 @@ class TarFlowLightning(pl.LightningModule):
         z, logdet = self.model(x)
         
         # MLE loss: -log p(x) = 0.5 * ||z||^2 - logdet
-        log_pz = -0.5 * z.pow(2).sum(dim=[1, 2])
+        # Both terms averaged over dims to match TarFlow's logdet convention
+        log_pz = -0.5 * z.pow(2).mean(dim=[1, 2])
         nll = -(log_pz + logdet).mean()
         
         self.log("train/loss", nll, prog_bar=True, sync_dist=True)
@@ -73,7 +74,7 @@ class TarFlowLightning(pl.LightningModule):
         x = batch[0]
         z, logdet = self.model(x)
         
-        log_pz = -0.5 * z.pow(2).sum(dim=[1, 2])
+        log_pz = -0.5 * z.pow(2).mean(dim=[1, 2])
         nll = -(log_pz + logdet).mean()
         
         self.log("val/loss", nll, prog_bar=True, sync_dist=True)
