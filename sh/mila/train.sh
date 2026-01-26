@@ -31,6 +31,9 @@ else
   echo "[uv] using existing venv: ${UV_PROJECT_ENVIRONMENT}"
 fi
 
-
-uv run python train.py data.batch_size=128  train.lr=1.0e-4 train.precision='32'
-
+# Debug config: tiny model for fast NaN debugging
+uv run python train.py \
+  data.batch_size=128 \
+  model.hidden_dim=128 \
+  encoder.n_layers=1 encoder.n_heads=8 \
+  flow.n_blocks=2

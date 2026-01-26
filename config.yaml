@@ -7,17 +7,18 @@ data:
   seq_len: 256
   num_workers: 4
 
-# Encoder (BERT-style)
-encoder:
+# Model (shared width, different depth)
+model:
   vocab_size: 27
-  hidden_dim: 256
-  output_dim: 64
+  hidden_dim: 768
+
+# Encoder depth
+encoder:
   n_layers: 2
   n_heads: 8
 
-# TarFlow (GPT2-Small scale)
+# Flow depth
 flow:
-  hidden_dim: 768
   n_blocks: 12
   layers_per_block: 1
 
