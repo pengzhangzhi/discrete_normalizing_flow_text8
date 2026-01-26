@@ -176,10 +176,16 @@ class TarFlowModel(nn.Module):
             z: Latent representation (B, seq_len, encoder_output)
             logdet: Log determinant of Jacobian (B,)
         """
+        # Encoder can use mixed precision
         h = self.encoder(x)
-        z, logdet = self.flow(h)
+        
+        # Flow must run in fp32 for numerical stability (logdet, exp operations)
+        with torch.amp.autocast(device_type="cuda", enabled=False):
+            h_fp32 = h.float()
+            z, logdet = self.flow(h_fp32)
         return z, logdet
     
     def reverse(self, z: torch.Tensor) -> torch.Tensor:
         """Reverse the flow: latent -> embeddings."""
-        return self.flow.reverse(z)
+        with torch.amp.autocast(device_type="cuda", enabled=False):
+            return self.flow.reverse(z.float())
