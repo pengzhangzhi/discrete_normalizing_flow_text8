@@ -243,7 +243,7 @@ class MetaBlock(torch.nn.Module):
             xa = torch.zeros_like(x)
 
         # Clamp xa to prevent exp overflow (exp(20) ≈ 5e8, exp(-20) ≈ 2e-9)
-        xa_clamped = xa.float().clamp(-20, 20)
+        xa_clamped = xa.float().clamp(-10, 10)
         scale = (-xa_clamped).exp().type(xa.dtype)
         output = self.permutation((x_in - xb) * scale, inverse=True)
         logdet = -xa_clamped.mean(dim=[1, 2])
