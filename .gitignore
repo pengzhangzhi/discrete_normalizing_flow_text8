@@ -220,3 +220,4 @@ checkpoints/
 
 outputs/
 watch_folder/
+.cursor/
