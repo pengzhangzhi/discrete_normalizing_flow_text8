@@ -106,8 +106,10 @@ class TarFlowModel(nn.Module):
         flow_blocks: int,
         flow_layers_per_block: int,
         dropout: float = 0.0,
+        noise_std: float = 0.0,
     ):
         super().__init__()
+        self.noise_std = noise_std
         self.encoder = TextEncoder(
             vocab_size=vocab_size,
             seq_len=seq_len,
@@ -130,9 +132,11 @@ class TarFlowModel(nn.Module):
     
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """x: (B, seq_len, vocab_size) -> z: (B, seq_len, hidden_dim), logdet: (B,)"""
-        h = self.encoder(x)
+        u = self.encoder(x)
+        if self.training and self.noise_std > 0:
+            u = u + self.noise_std * torch.randn_like(u)
         with torch.amp.autocast(device_type="cuda", enabled=False):
-            z, logdet = self.flow(h.float())
+            z, logdet = self.flow(u.float())
         return z, logdet
     
     def reverse(self, z: torch.Tensor) -> torch.Tensor:

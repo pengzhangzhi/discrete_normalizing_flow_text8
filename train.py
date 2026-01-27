@@ -1,3 +1,4 @@
+import json
 import math
 from datetime import timedelta
 from pathlib import Path
@@ -5,11 +6,12 @@ from pathlib import Path
 import hydra
 import pytorch_lightning as pl
 import torch
+import wandb
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 
-from data import get_dataloaders
+from data import Text8DataModule
 from model import TarFlowModel
 
 
@@ -40,6 +42,7 @@ class TarFlowLightning(pl.LightningModule):
             flow_blocks=cfg.flow.n_blocks,
             flow_layers_per_block=cfg.flow.layers_per_block,
             dropout=cfg.train.dropout,
+            noise_std=cfg.train.noise_std,
         )
     
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -88,46 +91,38 @@ class TarFlowLightning(pl.LightningModule):
         return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "interval": "step"}}
 
 
+def get_or_create_wandb_run_id(save_dir: Path) -> str:
+    """Get existing WandB run_id or create a new one. Persists to save_dir for resume."""
+    run_id_file = save_dir / "wandb_run_id.json"
+    if run_id_file.exists():
+        return json.load(open(run_id_file))["run_id"]
+    run_id = wandb.util.generate_id()
+    json.dump({"run_id": run_id}, open(run_id_file, "w"))
+    return run_id
+
+
 @hydra.main(version_base=None, config_path=".", config_name="config")
 def main(cfg: DictConfig) -> None:
     print(OmegaConf.to_yaml(cfg))
     pl.seed_everything(cfg.train.seed)
     
-    train_loader, val_loader = get_dataloaders(
+    save_dir = Path(cfg.logging.save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    
+    datamodule = Text8DataModule(
         root=cfg.data.root,
         batch_size=cfg.data.batch_size,
         seq_len=cfg.data.seq_len,
         num_workers=cfg.data.num_workers,
     )
-    
     model = TarFlowLightning(cfg)
     
-    wandb_logger = WandbLogger(
-        project=cfg.logging.project,
-        name=cfg.logging.run_name,
-        save_dir=cfg.logging.save_dir,
-        config=OmegaConf.to_container(cfg, resolve=True),
-    )
-    
-    save_dir = Path(cfg.logging.save_dir)
-    save_dir.mkdir(parents=True, exist_ok=True)
-    
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=save_dir,
-        filename="last",
-        save_last=False,
-        train_time_interval=timedelta(minutes=175),
-        save_top_k=1,
-        enable_version_counter=False,
-    )
-    lr_monitor = LearningRateMonitor(logging_interval="step")
-    
+    # Checkpoint and resume setup
     ckpt_path = save_dir / "last.ckpt"
-    if ckpt_path.exists():
-        print(f">>> Resuming from {ckpt_path}")
-    else:
-        ckpt_path = None
-        print(">>> Starting fresh training")
+    is_resume = ckpt_path.exists()
+    wandb_run_id = get_or_create_wandb_run_id(save_dir)
+    
+    print(f">>> {'Resuming' if is_resume else 'Starting fresh'} | ckpt={ckpt_path if is_resume else 'None'} | wandb_id={wandb_run_id}")
     
     trainer = pl.Trainer(
         max_steps=cfg.train.max_steps,
@@ -135,15 +130,32 @@ def main(cfg: DictConfig) -> None:
         gradient_clip_val=cfg.train.grad_clip,
         val_check_interval=cfg.train.val_check_interval,
         log_every_n_steps=cfg.train.log_every_n_steps,
-        logger=wandb_logger,
-        callbacks=[checkpoint_callback, lr_monitor],
+        logger=WandbLogger(
+            project=cfg.logging.project,
+            name=cfg.logging.run_name,
+            save_dir=cfg.logging.save_dir,
+            config=OmegaConf.to_container(cfg, resolve=True),
+            id=wandb_run_id,
+            resume="allow",
+        ),
+        callbacks=[
+            ModelCheckpoint(
+                dirpath=save_dir,
+                filename="last",
+                save_last=False,
+                train_time_interval=timedelta(minutes=10),
+                save_top_k=1,
+                enable_version_counter=False,
+            ),
+            LearningRateMonitor(logging_interval="step"),
+        ],
         enable_progress_bar=True,
         strategy=cfg.distributed.strategy,
         devices=cfg.distributed.devices,
         num_nodes=cfg.distributed.num_nodes,
     )
     
-    trainer.fit(model, train_loader, val_loader, ckpt_path=ckpt_path)
+    trainer.fit(model, datamodule=datamodule, ckpt_path=ckpt_path if is_resume else None)
 
 
 if __name__ == "__main__":

@@ -3,10 +3,12 @@ import pickle
 import zipfile
 
 import numpy as np
+import pytorch_lightning as pl
 import requests
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
+from torchdata.stateful_dataloader import StatefulDataLoader
 
 
 def prepare_text8(root: str) -> None:
@@ -102,29 +104,59 @@ class Text8Dataset(Dataset):
         return (seq_onehot,)
 
 
-def get_dataloaders(
-    root: str = "./data/text8",
-    batch_size: int = 512,
-    seq_len: int = 256,
-    num_workers: int = 4,
-) -> tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader]:
-    """Create train and validation dataloaders."""
-    train_dataset = Text8Dataset(root, "train", seq_len=seq_len)
-    val_dataset = Text8Dataset(root, "valid", seq_len=seq_len)
+class Text8DataModule(pl.LightningDataModule):
+    """LightningDataModule with StatefulDataLoader for precise checkpoint resumption."""
     
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=True,
-        drop_last=True,
-    )
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True,
-    )
-    return train_loader, val_loader
+    def __init__(self, root: str = "./data/text8", batch_size: int = 512, seq_len: int = 256, num_workers: int = 4):
+        super().__init__()
+        self.root = root
+        self.batch_size = batch_size
+        self.seq_len = seq_len
+        self.num_workers = num_workers
+        self._train_loader = None
+        self._val_loader = None
+    
+    def setup(self, stage: str = None):
+        self.train_dataset = Text8Dataset(self.root, "train", seq_len=self.seq_len)
+        self.val_dataset = Text8Dataset(self.root, "valid", seq_len=self.seq_len)
+    
+    def train_dataloader(self):
+        self._train_loader = StatefulDataLoader(
+            self.train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=self.num_workers,
+            pin_memory=True,
+            drop_last=True,
+        )
+        return self._train_loader
+    
+    def val_dataloader(self):
+        self._val_loader = StatefulDataLoader(
+            self.val_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            pin_memory=True,
+        )
+        return self._val_loader
+    
+    def state_dict(self):
+        """Save dataloader state for checkpoint. Called by Lightning automatically."""
+        state = {}
+        if self._train_loader is not None:
+            state["train_dataloader"] = self._train_loader.state_dict()
+        return state
+    
+    def load_state_dict(self, state_dict):
+        """Restore dataloader state from checkpoint. Called by Lightning automatically."""
+        self._pending_state = state_dict.get("train_dataloader")
+    
+    def on_after_batch_transfer(self, batch, dataloader_idx):
+        """Restore state after first batch (dataloader now exists)."""
+        if hasattr(self, "_pending_state") and self._pending_state is not None:
+            if self._train_loader is not None:
+                self._train_loader.load_state_dict(self._pending_state)
+                print(">>> Restored dataloader state")
+            self._pending_state = None
+        return batch
