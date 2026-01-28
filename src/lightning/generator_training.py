@@ -176,6 +176,7 @@ class GeneratorTraining(pl.LightningModule):
         # Sample and log text (only rank 0, first batch)
         if batch_idx == 0 and self.global_rank == 0:
             self._log_samples()
+            self._log_reconstructions(x_indices, preds)
         
         return loss
     
@@ -194,7 +195,38 @@ class GeneratorTraining(pl.LightningModule):
             table = wandb.Table(columns=["sample_id", "generated_text"])
             for i, text in enumerate(texts):
                 table.add_data(i, text)
-            self.logger.experiment.log({"samples": table, "global_step": self.global_step})
+            self.logger.experiment.log({"val/samples": table, "global_step": self.global_step})
+            
+            # Also log as plain text for quick viewing
+            sample_text = "\n---\n".join([f"[{i}] {t}" for i, t in enumerate(texts)])
+            self.logger.experiment.log({
+                "val/samples_text": wandb.Html(f"<pre>{sample_text}</pre>"),
+                "global_step": self.global_step
+            })
+    
+    def _log_reconstructions(self, x_indices: torch.Tensor, preds: torch.Tensor, num_samples: int = 4):
+        """Log reconstruction comparisons: ground truth vs predicted."""
+        if self.logger is None:
+            return
+        
+        # Take first num_samples from batch
+        gt_tokens = x_indices[:num_samples]
+        pred_tokens = preds[:num_samples]
+        
+        # Decode to text
+        rows = []
+        for i in range(num_samples):
+            gt_text = "".join([self.itos[t.item()] for t in gt_tokens[i]])
+            pred_text = "".join([self.itos[t.item()] for t in pred_tokens[i]])
+            # Character-level accuracy for this sample
+            match = (gt_tokens[i] == pred_tokens[i]).float().mean().item()
+            rows.append((i, gt_text, pred_text, f"{match:.2%}"))
+        
+        # Log to W&B as a table
+        table = wandb.Table(columns=["sample_id", "ground_truth", "reconstruction", "char_acc"])
+        for row in rows:
+            table.add_data(*row)
+        self.logger.experiment.log({"val/reconstructions": table, "global_step": self.global_step})
     
     def configure_optimizers(self):
         # Only optimize generator and adapters (encoder is frozen)
