@@ -1,6 +1,7 @@
 """Generator: BERT-style model that maps Gaussian noise Z to token logits.
 
 Independent architecture from NFEncoder - can have different hidden_dim, n_blocks, etc.
+Always uses RoPE (Rotary Positional Encoding) for flexible sequence length handling.
 """
 
 import torch
@@ -11,7 +12,7 @@ from .components import Block
 
 
 class Generator(nn.Module):
-    """BERT-style generator: Z -> logits.
+    """BERT-style generator with RoPE: Z -> logits.
     
     Takes Gaussian noise Z as input and outputs token logits.
     Architecture is independent from the encoder.
@@ -20,13 +21,14 @@ class Generator(nn.Module):
     def __init__(
         self,
         vocab_size: int,
-        seq_len: int,
         hidden_dim: int,
         n_blocks: int,
         n_heads: int,
         dropout: float = 0.0,
+        seq_len: int | None = None,  # Only needed for sampling
     ):
         super().__init__()
+        
         # Store hyperparameters
         self.hparams = {
             "vocab_size": vocab_size,
@@ -41,16 +43,15 @@ class Generator(nn.Module):
         self.seq_len = seq_len
         self.hidden_dim = hidden_dim
         
-        self.pos_embed = nn.Parameter(torch.zeros(1, seq_len, hidden_dim))
         self.blocks = nn.ModuleList([
-            Block(hidden_dim, n_heads, dropout=dropout) for _ in range(n_blocks)
+            Block(hidden_dim, n_heads, dropout=dropout) 
+            for _ in range(n_blocks)
         ])
         self.ln_out = nn.LayerNorm(hidden_dim)
         self.output_proj = nn.Linear(hidden_dim, vocab_size)
         self._init_weights()
     
     def _init_weights(self):
-        nn.init.trunc_normal_(self.pos_embed, std=0.02)
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.trunc_normal_(m.weight, std=0.02)
@@ -73,19 +74,20 @@ class Generator(nn.Module):
         model_cfg = hparams.get("model", {})
         data_cfg = hparams.get("data", {})
         
+        state_dict = ckpt["state_dict"]
+        model_state = {k.replace("model.", ""): v for k, v in state_dict.items() if k.startswith("model.")}
+        
         # Build model with checkpoint hyperparameters
         model = cls(
             vocab_size=model_cfg.get("vocab_size", data_cfg.get("vocab_size", 27)),
-            seq_len=model_cfg.get("seq_len", data_cfg.get("seq_len", 256)),
             hidden_dim=model_cfg.get("hidden_dim", 256),
             n_blocks=model_cfg.get("n_blocks", 8),
             n_heads=model_cfg.get("n_heads", 8),
             dropout=0.0,  # No dropout for inference
+            seq_len=model_cfg.get("seq_len", data_cfg.get("seq_len", 256)),
         )
         
-        # Load state dict (Lightning wraps model in "model." prefix)
-        state_dict = ckpt["state_dict"]
-        model_state = {k.replace("model.", ""): v for k, v in state_dict.items() if k.startswith("model.")}
+        # Load state dict
         model.load_state_dict(model_state)
         
         return model
@@ -103,7 +105,7 @@ class Generator(nn.Module):
             logits: (B, seq_len, vocab_size) token logits
             [optional] hiddens: list of hidden states from each block
         """
-        x = z + self.pos_embed
+        x = z
         hiddens = [] if return_intermediates else None
         for block in self.blocks:
             x = block(x)
@@ -115,7 +117,7 @@ class Generator(nn.Module):
         return logits
     
     def sample(
-        self, batch_size: int, device: torch.device, temperature: float = 1.0
+        self, batch_size: int, device: torch.device, temperature: float = 1.0, seq_len: int | None = None
     ) -> torch.Tensor:
         """Sample tokens from Gaussian noise.
         
@@ -123,17 +125,21 @@ class Generator(nn.Module):
             batch_size: Number of samples to generate
             device: Device to generate on
             temperature: Sampling temperature (0 = argmax, >0 = softmax sampling)
+            seq_len: Sequence length to generate (uses self.seq_len if not provided)
         
         Returns:
             tokens: (batch_size, seq_len) sampled token indices
         """
-        z = torch.randn(batch_size, self.seq_len, self.hidden_dim, device=device)
+        seq_len = seq_len or self.seq_len
+        if seq_len is None:
+            raise ValueError("seq_len must be provided for sampling when not set during init")
+        z = torch.randn(batch_size, seq_len, self.hidden_dim, device=device)
         logits = self.forward(z)
         if temperature == 0:
             tokens = logits.argmax(dim=-1)
         else:
             probs = F.softmax(logits / temperature, dim=-1)
-            tokens = torch.multinomial(probs.view(-1, self.vocab_size), 1).view(batch_size, self.seq_len)
+            tokens = torch.multinomial(probs.view(-1, self.vocab_size), 1).view(batch_size, seq_len)
         return tokens
     
     def get_num_blocks(self) -> int:

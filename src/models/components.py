@@ -8,7 +8,10 @@
 # Licensed under the MIT License (see LICENSE in the repository root).
 # -------------------------------------------------------------------------
 
-"""Shared model components: Transformer blocks, TarFlow, and utilities."""
+"""Shared model components: Transformer blocks, TarFlow, and utilities.
+
+All BERT-style components use RoPE (Rotary Positional Encoding) by default.
+"""
 
 import torch
 import torch.nn as nn
@@ -41,11 +44,69 @@ class MLMHead(nn.Module):
 
 
 # =============================================================================
+# Rotary Positional Encoding (RoPE)
+# =============================================================================
+
+class RotaryEmbedding(nn.Module):
+    """Rotary Positional Embedding (RoPE).
+    
+    Applies rotation matrices to queries and keys based on position.
+    No learnable parameters, works with any sequence length.
+    """
+    
+    def __init__(self, dim: int, base: float = 10000.0, max_seq_len: int = 8192):
+        super().__init__()
+        self.dim = dim
+        self.base = base
+        self.max_seq_len = max_seq_len
+        # Precompute frequencies
+        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        self._cached_cos = None
+        self._cached_sin = None
+        self._cached_seq_len = 0
+    
+    def _update_cache(self, seq_len: int, device: torch.device, dtype: torch.dtype):
+        if seq_len > self._cached_seq_len or self._cached_cos is None:
+            self._cached_seq_len = max(seq_len, self.max_seq_len)
+            t = torch.arange(self._cached_seq_len, device=device, dtype=self.inv_freq.dtype)
+            freqs = torch.outer(t, self.inv_freq)  # (seq_len, dim/2)
+            emb = torch.cat([freqs, freqs], dim=-1)  # (seq_len, dim)
+            self._cached_cos = emb.cos().to(dtype)
+            self._cached_sin = emb.sin().to(dtype)
+    
+    def forward(self, q: torch.Tensor, k: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Apply rotary embedding to queries and keys.
+        
+        Args:
+            q: (B, n_heads, T, head_dim)
+            k: (B, n_heads, T, head_dim)
+        
+        Returns:
+            q_rot, k_rot: rotated queries and keys
+        """
+        seq_len = q.shape[2]
+        self._update_cache(seq_len, q.device, q.dtype)
+        cos = self._cached_cos[:seq_len].unsqueeze(0).unsqueeze(0)  # (1, 1, T, dim)
+        sin = self._cached_sin[:seq_len].unsqueeze(0).unsqueeze(0)
+        q_rot = (q * cos) + (self._rotate_half(q) * sin)
+        k_rot = (k * cos) + (self._rotate_half(k) * sin)
+        return q_rot, k_rot
+    
+    @staticmethod
+    def _rotate_half(x: torch.Tensor) -> torch.Tensor:
+        """Rotate half the hidden dims."""
+        x1 = x[..., : x.shape[-1] // 2]
+        x2 = x[..., x.shape[-1] // 2 :]
+        return torch.cat([-x2, x1], dim=-1)
+
+
+# =============================================================================
 # BERT-style Transformer Components (for TextEncoder and Generator)
 # =============================================================================
 
 class Attention(nn.Module):
-    """Multi-head self-attention with SDPA."""
+    """Multi-head self-attention with SDPA and RoPE."""
     
     def __init__(self, dim: int, n_heads: int, dropout: float = 0.0):
         super().__init__()
@@ -55,11 +116,13 @@ class Attention(nn.Module):
         self.qkv = nn.Linear(dim, 3 * dim)
         self.proj = nn.Linear(dim, dim)
         self.dropout = dropout
+        self.rope = RotaryEmbedding(self.head_dim)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, T, C = x.shape
         qkv = self.qkv(x).reshape(B, T, 3, self.n_heads, self.head_dim)
-        q, k, v = qkv.permute(2, 0, 3, 1, 4).unbind(0)
+        q, k, v = qkv.permute(2, 0, 3, 1, 4).unbind(0)  # (B, n_heads, T, head_dim)
+        q, k = self.rope(q, k)
         x = F.scaled_dot_product_attention(
             q, k, v,
             dropout_p=self.dropout if self.training else 0.0,
@@ -69,7 +132,7 @@ class Attention(nn.Module):
 
 
 class Block(nn.Module):
-    """Transformer block with pre-norm."""
+    """Transformer block with pre-norm and RoPE."""
     
     def __init__(self, dim: int, n_heads: int, expansion: int = 4, dropout: float = 0.0):
         super().__init__()
@@ -91,12 +154,11 @@ class Block(nn.Module):
 
 
 class TextEncoder(nn.Module):
-    """BERT-style bidirectional transformer encoder."""
+    """BERT-style bidirectional transformer encoder with RoPE."""
     
     def __init__(
         self,
         vocab_size: int,
-        seq_len: int,
         hidden_dim: int,
         n_layers: int,
         n_heads: int,
@@ -104,15 +166,14 @@ class TextEncoder(nn.Module):
     ):
         super().__init__()
         self.input_proj = nn.Linear(vocab_size, hidden_dim)
-        self.pos_embed = nn.Parameter(torch.zeros(1, seq_len, hidden_dim))
         self.blocks = nn.ModuleList([
-            Block(hidden_dim, n_heads, dropout=dropout) for _ in range(n_layers)
+            Block(hidden_dim, n_heads, dropout=dropout) 
+            for _ in range(n_layers)
         ])
         self.ln_out = nn.LayerNorm(hidden_dim)
         self._init_weights()
     
     def _init_weights(self):
-        nn.init.trunc_normal_(self.pos_embed, std=0.02)
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.trunc_normal_(m.weight, std=0.02)
@@ -123,7 +184,7 @@ class TextEncoder(nn.Module):
                 nn.init.zeros_(m.bias)
     
     def forward(self, x: torch.Tensor, return_intermediates: bool = False) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]]:
-        x = self.input_proj(x) + self.pos_embed
+        x = self.input_proj(x)
         hiddens = [] if return_intermediates else None
         for block in self.blocks:
             x = block(x)

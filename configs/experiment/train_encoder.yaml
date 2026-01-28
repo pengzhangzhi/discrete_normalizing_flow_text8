@@ -17,6 +17,6 @@ training:
   mlm_weight: 1.0
 
 logging:
-  project: dnf-text8
+  project: oLM-text8
   run_name: encoder_${model.hidden_dim}_${model.encoder_layers}enc_${model.flow_blocks}flow
   save_dir: ${ckpt_dir}/${logging.run_name}

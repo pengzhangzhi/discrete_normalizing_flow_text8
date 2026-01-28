@@ -16,6 +16,6 @@ training:
   align_weight: 1.0
 
 logging:
-  project: dnf-text8
+  project: oLM-text8
   run_name: generator_${model.hidden_dim}_${model.n_blocks}blocks
   save_dir: ${ckpt_dir}/${logging.run_name}

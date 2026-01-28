@@ -3,6 +3,8 @@
 Maps input sequences X to Gaussian latent Z via:
 1. TextEncoder: X (one-hot) -> U (embeddings)
 2. TarFlow: U -> Z (Gaussian)
+
+Always uses RoPE (Rotary Positional Encoding) for flexible sequence length handling.
 """
 
 import torch
@@ -14,13 +16,13 @@ from .components import MLMHead, TarFlow, TextEncoder
 class NFEncoder(nn.Module):
     """Normalizing Flow Encoder: X -> Z where Z ~ N(0, I).
     
-    Combines a BERT-style text encoder with a TarFlow normalizing flow.
+    Combines a BERT-style text encoder (with RoPE) and a TarFlow normalizing flow.
     """
     
     def __init__(
         self,
         vocab_size: int,
-        seq_len: int,
+        seq_len: int,  # Required for TarFlow img_size calculation
         hidden_dim: int,
         encoder_layers: int,
         encoder_heads: int,
@@ -50,7 +52,6 @@ class NFEncoder(nn.Module):
         
         self.encoder = TextEncoder(
             vocab_size=vocab_size,
-            seq_len=seq_len,
             hidden_dim=hidden_dim,
             n_layers=encoder_layers,
             n_heads=encoder_heads,
@@ -86,6 +87,9 @@ class NFEncoder(nn.Module):
         model_cfg = cfg.get("model", {})
         data_cfg = cfg.get("data", {})
         
+        state_dict = ckpt["state_dict"]
+        model_state = {k.replace("model.", ""): v for k, v in state_dict.items() if k.startswith("model.")}
+        
         # Build model with checkpoint hyperparameters
         model = cls(
             vocab_size=model_cfg.get("vocab_size", 27),
@@ -100,9 +104,7 @@ class NFEncoder(nn.Module):
             mlm_enabled=model_cfg.get("mlm_enabled", False),
         )
         
-        # Load state dict (Lightning wraps model in "model." prefix)
-        state_dict = ckpt["state_dict"]
-        model_state = {k.replace("model.", ""): v for k, v in state_dict.items() if k.startswith("model.")}
+        # Load state dict
         model.load_state_dict(model_state)
         
         return model
