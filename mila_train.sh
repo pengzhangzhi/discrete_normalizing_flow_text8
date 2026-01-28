@@ -1,6 +1,7 @@
 #!/bin/bash
-# Usage: ./train <gpu_type> <training_script>
-# Example: ./train l40s sh/mila/scripts/encoder.sh
+# Example Usage:
+# ./mila_train.sh l40s sh/mila/scripts/encoder.sh
+# ./mila_train.sh h100 sh/mila/scripts/generator.sh
 
 set -euo pipefail
 
@@ -13,12 +14,10 @@ if [[ -z "$GPU" || -z "$SCRIPT" ]]; then
     exit 1
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 PROJ_DIR="/home/mila/a/alexander.tong/discrete_normalizing_flow_text8"
 cd "$PROJ_DIR"
 
-# Resolve training script path
 [[ "$SCRIPT" = /* ]] || SCRIPT="$PROJ_DIR/$SCRIPT"
 
 export DNF_TRAIN_SCRIPT="$SCRIPT"
-sbatch "$SCRIPT_DIR/slurm/${GPU}.sbatch"
+sbatch "$PROJ_DIR/sh/mila/slurm/${GPU}.sbatch"

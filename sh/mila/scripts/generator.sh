@@ -8,6 +8,8 @@ export UV_PROJECT_ENVIRONMENT="${SCRATCH}/uv-envs/discrete_normalizing_flow_text
 export UV_CACHE_DIR="${SCRATCH}/uv-cache"
 mkdir -p "$UV_CACHE_DIR"
 
+export WANDB_MODE=online
+
 echo "[uv] syncing environment at ${UV_PROJECT_ENVIRONMENT}..."
 uv sync --frozen
 
