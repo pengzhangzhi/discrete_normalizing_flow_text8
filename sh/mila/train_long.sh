@@ -1,19 +1,16 @@
 #!/bin/bash
-#SBATCH -J DNF_
-#SBATCH -o watch_folder/%x_%j.out
-#SBATCH -e watch_folder/%x_%j.err
+#SBATCH -J DNF
+#SBATCH -o watch_folder/l40s/%x_%j.out
+#SBATCH -e watch_folder/l40s/%x_%j.err
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:h100:4
+#SBATCH --partition=long
+#SBATCH --gres=gpu:l40s:4
+#SBATCH --cpus-per-gpu=12
 #SBATCH --mem-per-gpu=128G
-#SBATCH -t 03:00:00
-#SBATCH -c 64
+#SBATCH -t 7-00:00:00
 #SBATCH --open-mode=append
-#SBATCH --partition=short-unkillable
-#SBATCH --array=1-99%1
 
-set -euo pipefail
 
-# ---- go to project dir (explicit, since you gave it) ----
 PROJ_DIR="/home/mila/a/alexander.tong/discrete_normalizing_flow_text8"
 cd "$PROJ_DIR"
 
@@ -21,7 +18,6 @@ cd "$PROJ_DIR"
 export UV_PROJECT_ENVIRONMENT="${SCRATCH}/uv-envs/discrete_normalizing_flow_text8"
 export UV_CACHE_DIR="${SCRATCH}/uv-cache"
 mkdir -p "$UV_CACHE_DIR"
-
 
 # Always sync to ensure new dependencies are installed (fast if up-to-date)
 echo "[uv] syncing environment at ${UV_PROJECT_ENVIRONMENT}..."
@@ -32,8 +28,8 @@ uv run python train.py \
   data.num_workers=2 \
   model.hidden_dim=768 \
   train.precision='bf16-mixed' \
-  encoder.n_layers=8 encoder.n_heads=8 \
-  flow.n_blocks=8 \
+  encoder.n_layers=12 encoder.n_heads=16 \
+  flow.n_blocks=12 \
   mlm.enabled=false \
-  logging.save_dir=checkpoints/width_768_encoder_depth_8_flow_depth_8 \
-  logging.run_name=width_768_encoder_depth_8_flow_depth_8
+  logging.save_dir=checkpoints/width_768_encoder_depth_12_flow_depth_12 \
+  logging.run_name=width_768_encoder_depth_12_flow_depth_12
