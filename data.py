@@ -98,10 +98,10 @@ class Text8Dataset(Dataset):
     def __len__(self) -> int:
         return self.data.size - self.seq_len
     
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor]:
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         seq = torch.from_numpy(self.data[idx : idx + self.seq_len].astype(np.int64))
         seq_onehot = F.one_hot(seq, self.vocab_size).float()
-        return (seq_onehot,)
+        return seq_onehot, seq
 
 
 class Text8DataModule(pl.LightningDataModule):
@@ -157,6 +157,5 @@ class Text8DataModule(pl.LightningDataModule):
         if hasattr(self, "_pending_state") and self._pending_state is not None:
             if self._train_loader is not None:
                 self._train_loader.load_state_dict(self._pending_state)
-                print(">>> Restored dataloader state")
             self._pending_state = None
         return batch

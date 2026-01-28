@@ -12,7 +12,7 @@ from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 
 from data import Text8DataModule
-from model import TarFlowModel
+from model import TarFlowModel, apply_bert_mask
 
 
 def get_cosine_schedule_with_warmup(optimizer, warmup_steps: int, total_steps: int, min_lr_ratio: float = 0.1):
@@ -26,12 +26,17 @@ def get_cosine_schedule_with_warmup(optimizer, warmup_steps: int, total_steps: i
 
 
 class TarFlowLightning(pl.LightningModule):
-    """PyTorch Lightning module for TarFlow training."""
+    """PyTorch Lightning module for TarFlow training with optional MLM."""
     
     def __init__(self, cfg: DictConfig):
         super().__init__()
         self.save_hyperparameters(OmegaConf.to_container(cfg, resolve=True))
         self.cfg = cfg
+        
+        # MLM config with defaults for backward compatibility
+        self.mlm_enabled = cfg.get("mlm", {}).get("enabled", False)
+        self.mlm_mask_ratio = cfg.get("mlm", {}).get("mask_ratio", 0.15)
+        self.mlm_weight = cfg.get("mlm", {}).get("weight", 1.0)
         
         self.model = TarFlowModel(
             vocab_size=cfg.model.vocab_size,
@@ -42,38 +47,59 @@ class TarFlowLightning(pl.LightningModule):
             flow_blocks=cfg.flow.n_blocks,
             flow_layers_per_block=cfg.flow.layers_per_block,
             dropout=cfg.train.dropout,
-            noise_std=cfg.train.noise_std,
+            noise_std_ratio=cfg.model.noise_std_ratio,
+            mlm_enabled=self.mlm_enabled,
         )
     
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return self.model(x)
     
     def training_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
-        x = batch[0]
-        z, logdet = self.model(x)
+        x_onehot, x_indices = batch
         
-        # NLL: -log p(x) = 0.5 * ||z||^2 - logdet
+        if self.mlm_enabled:
+            # Apply BERT-style masking
+            x_masked, mask = apply_bert_mask(x_onehot, self.mlm_mask_ratio)
+            z, logdet, u = self.model(x_masked, return_encoder_output=True)
+            
+            # MLM loss: cross-entropy on masked positions only
+            mlm_logits = self.model.mlm_logits(u)  # (B, T, vocab_size)
+            mlm_loss = torch.nn.functional.cross_entropy(
+                mlm_logits[mask].view(-1, mlm_logits.size(-1)),
+                x_indices[mask].view(-1),
+            )
+        else:
+            z, logdet = self.model(x_onehot)
+            mlm_loss = torch.tensor(0.0, device=z.device)
+        
+        # Flow NLL: -log p(x) = 0.5 * ||z||^2 - logdet
         log_pz = -0.5 * z.pow(2).mean(dim=[1, 2])
-        nll = -(log_pz + logdet).mean()
+        flow_loss = -(log_pz + logdet).mean()
         
-        self.log("train/loss", nll, prog_bar=True, sync_dist=True)
+        # Combined loss
+        loss = flow_loss + self.mlm_weight * mlm_loss
+        
+        self.log("train/loss", loss, prog_bar=True, sync_dist=True)
+        self.log("train/flow_loss", flow_loss, sync_dist=True)
+        self.log("train/mlm_loss", mlm_loss, sync_dist=True)
         self.log("train/logdet", logdet.mean(), sync_dist=True)
         self.log("train/z_norm", z.pow(2).mean().sqrt(), sync_dist=True)
-        return nll
+        return loss
     
     def on_before_optimizer_step(self, optimizer):
         grad_norm = sum(p.grad.norm(2).item() ** 2 for p in self.parameters() if p.grad is not None) ** 0.5
         self.log("train/grad_norm", grad_norm, sync_dist=True)
     
     def validation_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
-        x = batch[0]
-        z, logdet = self.model(x)
+        x_onehot, x_indices = batch
+        # Validation: evaluate clean flow performance (no masking)
+        z, logdet = self.model(x_onehot)
         
         log_pz = -0.5 * z.pow(2).mean(dim=[1, 2])
-        nll = -(log_pz + logdet).mean()
+        flow_loss = -(log_pz + logdet).mean()
         
-        self.log("val/loss", nll, prog_bar=True, sync_dist=True)
-        return nll
+        self.log("val/loss", flow_loss, prog_bar=True, sync_dist=True)
+        return flow_loss
     
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(
@@ -120,6 +146,7 @@ def main(cfg: DictConfig) -> None:
     # Checkpoint and resume setup
     ckpt_path = save_dir / "last.ckpt"
     is_resume = ckpt_path.exists()
+    
     wandb_run_id = get_or_create_wandb_run_id(save_dir)
     
     print(f">>> {'Resuming' if is_resume else 'Starting fresh'} | ckpt={ckpt_path if is_resume else 'None'} | wandb_id={wandb_run_id}")

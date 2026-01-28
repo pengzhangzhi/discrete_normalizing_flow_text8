@@ -5,6 +5,43 @@ import torch.nn.functional as F
 from tarflow_single_system import TarFlow
 
 
+def apply_bert_mask(
+    x_onehot: torch.Tensor, mask_ratio: float = 0.15
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Apply BERT-style masking by zeroing out random positions.
+    
+    Args:
+        x_onehot: (B, T, vocab_size) one-hot encoded input
+        mask_ratio: fraction of positions to mask
+    
+    Returns:
+        x_masked: (B, T, vocab_size) with masked positions zeroed
+        mask: (B, T) boolean tensor, True at masked positions
+    """
+    B, T, V = x_onehot.shape
+    # Sample mask positions
+    mask = torch.rand(B, T, device=x_onehot.device) < mask_ratio
+    # Zero out masked positions
+    x_masked = x_onehot.clone()
+    x_masked[mask] = 0.0
+    return x_masked, mask
+
+
+class MLMHead(nn.Module):
+    """Simple MLM prediction head: LayerNorm -> Linear."""
+    
+    def __init__(self, hidden_dim: int, vocab_size: int):
+        super().__init__()
+        self.ln = nn.LayerNorm(hidden_dim)
+        self.proj = nn.Linear(hidden_dim, vocab_size)
+        nn.init.zeros_(self.proj.bias)
+        nn.init.trunc_normal_(self.proj.weight, std=0.02)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (B, T, hidden_dim) -> logits: (B, T, vocab_size)"""
+        return self.proj(self.ln(x))
+
+
 class Attention(nn.Module):
     """Multi-head self-attention with SDPA."""
     
@@ -94,7 +131,7 @@ class TextEncoder(nn.Module):
 
 
 class TarFlowModel(nn.Module):
-    """Encoder + TarFlow normalizing flow with shared hidden dimension."""
+    """Encoder + TarFlow normalizing flow with shared hidden dimension and optional MLM."""
     
     def __init__(
         self,
@@ -106,10 +143,12 @@ class TarFlowModel(nn.Module):
         flow_blocks: int,
         flow_layers_per_block: int,
         dropout: float = 0.0,
-        noise_std: float = 0.0,
+        noise_std_ratio: float = 0.0,
+        mlm_enabled: bool = False,
     ):
         super().__init__()
-        self.noise_std = noise_std
+        self.noise_std_ratio = noise_std_ratio
+        self.mlm_enabled = mlm_enabled
         self.encoder = TextEncoder(
             vocab_size=vocab_size,
             seq_len=seq_len,
@@ -129,15 +168,29 @@ class TarFlowModel(nn.Module):
             num_classes=0,
             dropout=dropout,
         )
+        if mlm_enabled:
+            self.mlm_head = MLMHead(hidden_dim, vocab_size)
     
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """x: (B, seq_len, vocab_size) -> z: (B, seq_len, hidden_dim), logdet: (B,)"""
+    def forward(
+        self, x: torch.Tensor, return_encoder_output: bool = False
+    ) -> tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        x: (B, seq_len, vocab_size) -> z: (B, seq_len, hidden_dim), logdet: (B,)
+        If return_encoder_output=True, also returns u: (B, seq_len, hidden_dim)
+        """
         u = self.encoder(x)
-        if self.training and self.noise_std > 0:
-            u = u + self.noise_std * torch.randn_like(u)
+        u_for_flow = u
+        if self.training and self.noise_std_ratio > 0:
+            u_for_flow = u + self.noise_std_ratio * u.std() * torch.randn_like(u)
         with torch.amp.autocast(device_type="cuda", enabled=False):
-            z, logdet = self.flow(u.float())
+            z, logdet = self.flow(u_for_flow.float())
+        if return_encoder_output:
+            return z, logdet, u
         return z, logdet
+    
+    def mlm_logits(self, u: torch.Tensor) -> torch.Tensor:
+        """Compute MLM logits from encoder output."""
+        return self.mlm_head(u)
     
     def reverse(self, z: torch.Tensor) -> torch.Tensor:
         """Reverse the flow: latent -> embeddings."""
