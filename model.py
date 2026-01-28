@@ -122,12 +122,18 @@ class TextEncoder(nn.Module):
                 nn.init.ones_(m.weight)
                 nn.init.zeros_(m.bias)
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, return_intermediates: bool = False) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]]:
         """x: (B, seq_len, vocab_size) one-hot -> (B, seq_len, hidden_dim)"""
         x = self.input_proj(x) + self.pos_embed
+        hiddens = [] if return_intermediates else None
         for block in self.blocks:
             x = block(x)
-        return self.ln_out(x)
+            if return_intermediates:
+                hiddens.append(x)
+        out = self.ln_out(x)
+        if return_intermediates:
+            return out, hiddens
+        return out
 
 
 class TarFlowModel(nn.Module):
@@ -172,18 +178,27 @@ class TarFlowModel(nn.Module):
             self.mlm_head = MLMHead(hidden_dim, vocab_size)
     
     def forward(
-        self, x: torch.Tensor, return_encoder_output: bool = False
-    ) -> tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        self, x: torch.Tensor, return_encoder_output: bool = False, return_intermediates: bool = False
+    ) -> tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, list[torch.Tensor]]:
         """
         x: (B, seq_len, vocab_size) -> z: (B, seq_len, hidden_dim), logdet: (B,)
         If return_encoder_output=True, also returns u: (B, seq_len, hidden_dim)
+        If return_intermediates=True, returns list of hidden states from encoder + flow blocks
         """
-        u = self.encoder(x)
+        if return_intermediates:
+            u, encoder_hiddens = self.encoder(x, return_intermediates=True)
+        else:
+            u = self.encoder(x)
         u_for_flow = u
         if self.training and self.noise_std_ratio > 0:
             u_for_flow = u + self.noise_std_ratio * u.std() * torch.randn_like(u)
         with torch.amp.autocast(device_type="cuda", enabled=False):
-            z, logdet = self.flow(u_for_flow.float())
+            if return_intermediates:
+                z, logdet, flow_hiddens = self.flow(u_for_flow.float(), return_intermediates=True)
+                all_hiddens = encoder_hiddens + flow_hiddens
+                return z, logdet, all_hiddens
+            else:
+                z, logdet = self.flow(u_for_flow.float())
         if return_encoder_output:
             return z, logdet, u
         return z, logdet
@@ -196,3 +211,68 @@ class TarFlowModel(nn.Module):
         """Reverse the flow: latent -> embeddings."""
         with torch.amp.autocast(device_type="cuda", enabled=False):
             return self.flow.reverse(z.float())
+
+
+class Generator(nn.Module):
+    """BERT-style generator: Z → logits.
+    
+    Takes Gaussian noise Z as input and outputs token logits.
+    Architecture matches the encoder (encoder_layers + flow_blocks total blocks).
+    """
+    
+    def __init__(
+        self,
+        vocab_size: int,
+        seq_len: int,
+        hidden_dim: int,
+        n_blocks: int,
+        n_heads: int,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.seq_len = seq_len
+        self.hidden_dim = hidden_dim
+        
+        self.pos_embed = nn.Parameter(torch.zeros(1, seq_len, hidden_dim))
+        self.blocks = nn.ModuleList([
+            Block(hidden_dim, n_heads, dropout=dropout) for _ in range(n_blocks)
+        ])
+        self.ln_out = nn.LayerNorm(hidden_dim)
+        self.output_proj = nn.Linear(hidden_dim, vocab_size)
+        self._init_weights()
+    
+    def _init_weights(self):
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.trunc_normal_(m.weight, std=0.02)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+    
+    def forward(self, z: torch.Tensor, return_intermediates: bool = False) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]]:
+        """z: (B, seq_len, hidden_dim) → logits: (B, seq_len, vocab_size)"""
+        x = z + self.pos_embed
+        hiddens = [] if return_intermediates else None
+        for block in self.blocks:
+            x = block(x)
+            if return_intermediates:
+                hiddens.append(x)
+        logits = self.output_proj(self.ln_out(x))
+        if return_intermediates:
+            return logits, hiddens
+        return logits
+    
+    def sample(self, batch_size: int, device: torch.device, temperature: float = 1.0) -> torch.Tensor:
+        """Sample tokens from Gaussian noise."""
+        z = torch.randn(batch_size, self.seq_len, self.hidden_dim, device=device)
+        logits = self.forward(z)
+        if temperature == 0:
+            tokens = logits.argmax(dim=-1)
+        else:
+            probs = F.softmax(logits / temperature, dim=-1)
+            tokens = torch.multinomial(probs.view(-1, self.vocab_size), 1).view(batch_size, self.seq_len)
+        return tokens

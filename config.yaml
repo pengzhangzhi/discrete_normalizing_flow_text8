@@ -54,3 +54,8 @@ logging:
   project: tarflow-text8
   run_name: null
   save_dir: ./checkpoints  # Auto-resumes from last.ckpt if exists
+
+# Generator (Stage B) - only used by train_generator.py
+generator:
+  encoder_ckpt: null        # Path to frozen Stage A encoder checkpoint (required)
+  align_weight: 1.0         # Weight for representation alignment loss
