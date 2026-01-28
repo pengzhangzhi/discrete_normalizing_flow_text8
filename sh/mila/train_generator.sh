@@ -21,10 +21,27 @@ export UV_PROJECT_ENVIRONMENT="${SCRATCH}/uv-envs/discrete_normalizing_flow_text
 export UV_CACHE_DIR="${SCRATCH}/uv-cache"
 mkdir -p "$UV_CACHE_DIR"
 
-# Always sync to ensure new dependencies are installed (fast if up-to-date)
+# Always sync to ensure new dependencies are installed
 echo "[uv] syncing environment at ${UV_PROJECT_ENVIRONMENT}..."
 uv sync --frozen
 
-# Path to frozen Stage A encoder checkpoint
-ENCODER_CKPT="checkpoints/width_256_encoder_depth_4_flow_depth_4_mlm/last.ckpt"
-uv run python train_generator.py   data.batch_size=128   data.num_workers=2   model.hidden_dim=256   train.precision='bf16-mixed'   encoder.n_layers=4 encoder.n_heads=8   flow.n_blocks=4   generator.encoder_ckpt="$ENCODER_CKPT"   generator.align_weight=0   logging.save_dir=checkpoints/generator_256_8blocks   logging.run_name=generator_256_8blocks
+
+EXP_NAME="Generator_256_8blocks"
+CKPT_DIR="${SCRATCH}/OLM/${EXP_NAME}"
+mkdir -p "$CKPT_DIR"
+
+
+ENCODER_EXP="NFEncoder_256_4enc_4flow"
+ENCODER_CKPT="${SCRATCH}/OLM/${ENCODER_EXP}/last.ckpt"
+
+# Train Generator (Stage B)
+uv run python train.py +experiment=train_generator \
+  ckpt_dir="$CKPT_DIR" \
+  logging.run_name="$EXP_NAME" \
+  data.batch_size=128 \
+  data.num_workers=2 \
+  model.hidden_dim=256 \
+  model.n_blocks=8 \
+  model.n_heads=8 \
+  training.encoder_ckpt="$ENCODER_CKPT" \
+  training.align_weight=0.0

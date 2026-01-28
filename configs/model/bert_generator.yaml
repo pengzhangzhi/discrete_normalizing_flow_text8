@@ -1,0 +1,9 @@
+# BERT Generator architecture (independent from encoder)
+_target_: src.models.Generator
+
+vocab_size: ${data.vocab_size}
+seq_len: ${data.seq_len}
+hidden_dim: 256
+n_blocks: 8
+n_heads: 8
+dropout: 0.0

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH -J DNF_
+#SBATCH -J DNF_enc
 #SBATCH -o watch_folder/%x_%j.out
 #SBATCH -e watch_folder/%x_%j.err
 #SBATCH --nodes=1
@@ -13,27 +13,34 @@
 
 set -euo pipefail
 
-# ---- go to project dir (explicit, since you gave it) ----
+# ---- go to project dir ----
 PROJ_DIR="/home/mila/a/alexander.tong/discrete_normalizing_flow_text8"
 cd "$PROJ_DIR"
-
 
 export UV_PROJECT_ENVIRONMENT="${SCRATCH}/uv-envs/discrete_normalizing_flow_text8"
 export UV_CACHE_DIR="${SCRATCH}/uv-cache"
 mkdir -p "$UV_CACHE_DIR"
 
 
-# Always sync to ensure new dependencies are installed (fast if up-to-date)
+# Always sync to ensure new dependencies are installed
 echo "[uv] syncing environment at ${UV_PROJECT_ENVIRONMENT}..."
 uv sync --frozen
 
-uv run python train.py \
+
+EXP_NAME="NFEncoder_256_4enc_4flow"
+
+CKPT_DIR="${SCRATCH}/OLM/${EXP_NAME}"
+mkdir -p "$CKPT_DIR"
+
+
+# Train NFEncoder (Stage A)
+uv run python train.py +experiment=train_encoder \
+  ckpt_dir="$CKPT_DIR" \
+  logging.run_name="$EXP_NAME" \
   data.batch_size=128 \
   data.num_workers=2 \
-  model.hidden_dim=768 \
-  train.precision='bf16-mixed' \
-  encoder.n_layers=8 encoder.n_heads=8 \
-  flow.n_blocks=8 \
-  mlm.enabled=false \
-  logging.save_dir=checkpoints/width_768_encoder_depth_8_flow_depth_8 \
-  logging.run_name=width_768_encoder_depth_8_flow_depth_8
+  model.hidden_dim=256 \
+  model.encoder_layers=4 \
+  model.encoder_heads=8 \
+  model.flow_blocks=4 \
+  training.mlm_enabled=false

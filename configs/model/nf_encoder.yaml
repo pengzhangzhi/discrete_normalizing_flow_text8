@@ -1,0 +1,13 @@
+# NFEncoder (Normalizing Flow Encoder) architecture
+_target_: src.models.NFEncoder
+
+vocab_size: ${data.vocab_size}
+seq_len: ${data.seq_len}
+hidden_dim: 256
+encoder_layers: 4
+encoder_heads: 8
+flow_blocks: 4
+flow_layers_per_block: 1
+dropout: 0.0
+noise_std_ratio: 0.0
+mlm_enabled: ${training.mlm_enabled}

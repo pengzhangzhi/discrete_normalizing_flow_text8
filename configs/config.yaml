@@ -1,0 +1,9 @@
+# Base configuration - composed by experiment configs
+
+defaults:
+  - data: text8
+  - trainer: default
+  - _self_
+
+seed: 42
+ckpt_dir: ./checkpoints

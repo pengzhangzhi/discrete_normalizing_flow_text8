@@ -1,0 +1,22 @@
+# @package _global_
+# Experiment config for training NFEncoder (Stage A)
+# Usage: python train.py +experiment=train_encoder
+
+defaults:
+  - /model: nf_encoder
+
+training:
+  _target_: src.lightning.EncoderTraining
+  lr: 3.0e-5
+  max_steps: 500000
+  warmup_steps: 10000
+  min_lr_ratio: 0.1
+  weight_decay: 1.0e-3
+  mlm_enabled: true
+  mlm_mask_ratio: 0.15
+  mlm_weight: 1.0
+
+logging:
+  project: dnf-text8
+  run_name: encoder_${model.hidden_dim}_${model.encoder_layers}enc_${model.flow_blocks}flow
+  save_dir: ${ckpt_dir}/${logging.run_name}
