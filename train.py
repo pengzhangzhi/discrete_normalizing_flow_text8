@@ -17,6 +17,7 @@ from pathlib import Path
 
 import hydra
 import pytorch_lightning as pl
+import torch
 import wandb
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
@@ -94,8 +95,8 @@ def main(cfg: DictConfig) -> None:
         ],
     )
     
-    # Train
-    trainer.fit(lightning_module, datamodule=datamodule, ckpt_path=ckpt_path if is_resume else None)
+    # Train (weights_only=False for PyTorch 2.6+ compatibility with omegaconf checkpoints)
+    trainer.fit(lightning_module, datamodule=datamodule, ckpt_path=ckpt_path if is_resume else None, weights_only=False)
     
     # Always save final checkpoint
     trainer.save_checkpoint(save_dir / "last.ckpt")
