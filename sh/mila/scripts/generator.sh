@@ -12,20 +12,19 @@ export WANDB_MODE=online
 echo "[uv] syncing environment at ${UV_PROJECT_ENVIRONMENT}..."
 uv sync --frozen
 
-EXP_NAME="Generator_256_4blocks"
+EXP_NAME="Generator_512_8blocks"
 CKPT_DIR="${SCRATCH}/OLM/${EXP_NAME}"
 mkdir -p "$CKPT_DIR"
 
-ENCODER_EXP="NFEncoder_256_4enc_4flow"
-ENCODER_CKPT="${SCRATCH}/OLM/${ENCODER_EXP}/last.ckpt"
+ENCODER_CKPT="${SCRATCH}/OLM/NFEncoder_512_8enc_8flow/NFEncoder_512_8enc_8flow/last.ckpt"
 
 uv run python train.py +experiment=train_generator \
   ckpt_dir="$CKPT_DIR" \
   logging.run_name="$EXP_NAME" \
   data.batch_size=128 \
   data.num_workers=2 \
-  model.hidden_dim=256 \
-  model.n_blocks=4 \
-  model.n_heads=4 \
+  model.hidden_dim=512 \
+  model.n_blocks=8 \
+  model.n_heads=8 \
   training.encoder_ckpt="$ENCODER_CKPT" \
   training.align_weight=0.0

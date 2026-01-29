@@ -12,7 +12,7 @@ export WANDB_MODE=online
 echo "[uv] syncing environment at ${UV_PROJECT_ENVIRONMENT}..."
 uv sync --frozen
 
-EXP_NAME="NFEncoder_256_4enc_4flow"
+EXP_NAME="NFEncoder_512_8enc_8flow_ae_w_1"
 CKPT_DIR="${SCRATCH}/OLM/${EXP_NAME}"
 mkdir -p "$CKPT_DIR"
 
@@ -21,8 +21,10 @@ uv run python train.py +experiment=train_encoder \
   logging.run_name="$EXP_NAME" \
   data.batch_size=128 \
   data.num_workers=2 \
-  model.hidden_dim=256 \
-  model.encoder_layers=4 \
-  model.encoder_heads=4 \
-  model.flow_blocks=4 \
-  training.mlm_enabled=false
+  model.hidden_dim=512 \
+  model.encoder_layers=8 \
+  model.encoder_heads=8 \
+  model.flow_blocks=8 \
+  training.mlm_enabled=false \
+  training.ae_enabled=true \
+  training.ae_loss_weight=1.0
