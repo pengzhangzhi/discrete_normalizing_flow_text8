@@ -43,6 +43,7 @@ class EncoderTraining(pl.LightningModule):
         mlm_enabled: bool = False,
         mlm_mask_ratio: float = 0.15,
         mlm_weight: float = 1.0,
+        ae_loss_weight: float = 0.0,
         **kwargs,
     ):
         super().__init__()
@@ -61,12 +62,18 @@ class EncoderTraining(pl.LightningModule):
         self.mlm_enabled = mlm_enabled
         self.mlm_mask_ratio = mlm_mask_ratio
         self.mlm_weight = mlm_weight
+        
+        # Autoencoding loss params
+        self.ae_loss_weight = ae_loss_weight
     
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return self.model(x)
     
     def training_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
         x_onehot, x_indices = batch
+        
+        # Determine if we need encoder output u
+        need_encoder_output = self.mlm_enabled or self.ae_loss_weight > 0
         
         if self.mlm_enabled:
             # Apply BERT-style masking
@@ -79,20 +86,34 @@ class EncoderTraining(pl.LightningModule):
                 mlm_logits[mask].view(-1, mlm_logits.size(-1)),
                 x_indices[mask].view(-1),
             )
+        elif need_encoder_output:
+            z, logdet, u = self.model(x_onehot, return_encoder_output=True)
+            mlm_loss = torch.tensor(0.0, device=z.device)
         else:
             z, logdet = self.model(x_onehot)
             mlm_loss = torch.tensor(0.0, device=z.device)
+        
+        # Autoencoding loss: cross-entropy on all positions to reconstruct x from u
+        if self.ae_loss_weight > 0:
+            ae_logits = self.model.ae_logits(u)
+            ae_loss = F.cross_entropy(
+                ae_logits.view(-1, ae_logits.size(-1)),
+                x_indices.view(-1),
+            )
+        else:
+            ae_loss = torch.tensor(0.0, device=z.device)
         
         # Flow NLL: -log p(x) = 0.5 * ||z||^2 - logdet
         log_pz = -0.5 * z.pow(2).mean(dim=[1, 2])
         flow_loss = -(log_pz + logdet).mean()
         
         # Combined loss
-        loss = flow_loss + self.mlm_weight * mlm_loss
+        loss = flow_loss + self.mlm_weight * mlm_loss + self.ae_loss_weight * ae_loss
         
         self.log("train/loss", loss, prog_bar=True, sync_dist=True)
         self.log("train/flow_loss", flow_loss, sync_dist=True)
         self.log("train/mlm_loss", mlm_loss, sync_dist=True)
+        self.log("train/ae_loss", ae_loss, sync_dist=True)
         self.log("train/logdet", logdet.mean(), sync_dist=True)
         self.log("train/z_norm", z.pow(2).mean().sqrt(), sync_dist=True)
         return loss

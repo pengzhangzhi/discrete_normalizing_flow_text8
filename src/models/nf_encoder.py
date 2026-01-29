@@ -31,6 +31,7 @@ class NFEncoder(nn.Module):
         dropout: float = 0.0,
         noise_std_ratio: float = 0.0,
         mlm_enabled: bool = False,
+        ae_enabled: bool = False,
     ):
         super().__init__()
         # Store hyperparameters for checkpoint reconstruction
@@ -45,10 +46,12 @@ class NFEncoder(nn.Module):
             "dropout": dropout,
             "noise_std_ratio": noise_std_ratio,
             "mlm_enabled": mlm_enabled,
+            "ae_enabled": ae_enabled,
         }
         
         self.noise_std_ratio = noise_std_ratio
         self.mlm_enabled = mlm_enabled
+        self.ae_enabled = ae_enabled
         
         self.encoder = TextEncoder(
             vocab_size=vocab_size,
@@ -72,6 +75,9 @@ class NFEncoder(nn.Module):
         
         if mlm_enabled:
             self.mlm_head = MLMHead(hidden_dim, vocab_size)
+        
+        if ae_enabled:
+            self.ae_head = MLMHead(hidden_dim, vocab_size)
     
     @classmethod
     def from_checkpoint(cls, ckpt_path: str, device: str = "cpu") -> "NFEncoder":
@@ -148,6 +154,10 @@ class NFEncoder(nn.Module):
     def mlm_logits(self, u: torch.Tensor) -> torch.Tensor:
         """Compute MLM logits from encoder output."""
         return self.mlm_head(u)
+    
+    def ae_logits(self, u: torch.Tensor) -> torch.Tensor:
+        """Compute autoencoding logits from encoder output."""
+        return self.ae_head(u)
     
     def reverse(self, z: torch.Tensor) -> torch.Tensor:
         """Reverse the flow: Z -> U (embeddings)."""

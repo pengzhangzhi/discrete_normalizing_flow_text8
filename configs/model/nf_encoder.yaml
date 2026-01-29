@@ -11,3 +11,4 @@ flow_layers_per_block: 1
 dropout: 0.0
 noise_std_ratio: 0.0
 mlm_enabled: ${training.mlm_enabled}
+ae_enabled: ${training.ae_enabled}
